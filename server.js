@@ -4,7 +4,11 @@ const express = require('express')
 const Slapp = require('slapp')
 const ConvoStore = require('slapp-convo-beepboop')
 const Context = require('slapp-context-beepboop')
-
+const yaml = require('js-yaml')
+const fs = require('fs')
+const _ = require('lodash')
+const handleHowAreYou = 'handleHowAreYou';
+const handleSweetDreams = 'handleSweetDreams';
 // use `PORT` env var on Beep Boop - default to 3000 locally
 var port = process.env.PORT || 3000
 
@@ -15,101 +19,245 @@ var slapp = Slapp({
   context: Context()
 })
 
+var Monitor = require('icecast-monitor');
+
+var monitor = new Monitor({
+  host: 'radio.radiospiral.net',
+  port: 8000,
+  user: 'admin',
+  password: 'Pa55w0rd'
+});
+
+// Load oblique strategies
+var strategies;
+try {
+  strategies = yaml.safeLoad(fs.readFileSync('strategies.yml', 'utf8'));
+  console.log(strategies[0]);
+} catch(e) {
+  console.log("Failed to load Oblique Strategies: " + e);
+}
+
+// enable debugging
+require('beepboop-slapp-presence-polyfill')(slapp, { debug: true })
 
 var HELP_TEXT = `
 I will respond to the following messages:
 \`help\` - to see this message.
-\`hi\` - to demonstrate a conversation that tracks state.
-\`thanks\` - to demonstrate a simple response.
-\`<type-any-other-text>\` - to demonstrate a random emoticon response, some of the time :wink:.
-\`attachment\` - to see a Slack attachment message.
+\`track\` - to see what the current track is.
+\`peak\` - report on the peak listener count.
+\`history\` - to get a list of previously played tracks.
+\`strategy\` - to get a random Oblique Strategy.
+I am very polite as well.
 `
 
-//*********************************************
+// *********************************************
 // Setup different handlers for messages
-//*********************************************
+// *********************************************
+
+const stopper = `I wasn't listening...`
+var previousTrack = `Nil`
+var currentTrack = stopper
+var testTrack = `Nol`
+var numListeners = 0
+var trackHistory = []
+var numTracks = 0
+var maxTracks = 10
+var histIndex = 0
+var savedToken = null;
+
+monitor.createFeed(function(err, feed) {
+  if (err) throw err;
+
+  // Handle wildcard events
+  //feed.on('*', function(event, data, raw) {
+  //  console.log(event, data, raw);
+  // });
+  // Handle listener change
+  feed.on('mount.listeners', function(listeners, raw) {
+    numListeners = raw;
+    console.log(listeners, raw);
+  });
+  // Handle track title change here
+
+  feed.on('mount.title', function(title, track) {
+    console.log('Now playing: ' + track);         // for debugging right now. should mean the track has changed
+    testTrack = track;                            // not sure what type track is, so force it to a string
+    if (currentTrack !== testTrack) {
+      //console.log(currentTrack + " is not equal to " + testTrack);    // debug, they aren't equal, so yes
+      numTracks = numTracks + 1;                  // to set a limit on history size we have to count tracks
+      previousTrack = currentTrack;               // save the no longer current track as the previous
+      currentTrack = track;                       // now store the current track
+      trackHistory = _.concat(trackHistory,previousTrack);  // save previous track
+      if (numTracks > maxTracks) {
+        trackHistory = _.drop(trackHistory);
+        numTracks = maxTracks;
+      }
+      // Post the track in now-playing
+      // slackToken should have been set already; skip if not
+      if (savedToken !== null) {
+        console.log('trying to hit #now-playing...');
+        let payload = Object.assign({
+          token: savedToken,
+          channel: '#now-playing'
+         }, 'Now playing: ' + currentTrack);
+        slapp.client.chat.postMessage(payload, (err, data) => {
+          if (err) console.log('Error posting message ', err, data)
+        });
+      }
+    } else {
+      console.log('**dupEvent ' + currentTrack + ' is equal to ' + testTrack);
+
+    }
+
+    console.log('previous: ' + previousTrack);    //debugging some more here
+
+    histIndex = numTracks;
+
+    while (histIndex > 0) {
+    console.log('track history: ' + trackHistory[histIndex]); //works, backwards I think
+      histIndex = histIndex - 1;
+    }
+
+//    slapp.use((track, next) => {
+//        console.log(track)
+//        msg.say('Now playing: ' + track);
+//        next()
+//    })
+   // message.say('Now playing: ' + track);
+  });
+});
+
+// handle changed messages (don't know what to do with this yet)
+
+//slapp.event('message_changed', (msg) => {
+//  let token = msg.meta.bot_token
+//  let id = msg.body.event.item.ts
+//  let channel = msg.body.event.item.channel
+//  slapp.client.reactions.add({token, 'smile', id, channel}, (err) => {
+//   if (err) console.log('Error adding reaction', err)
+//  })
+//})
+
+
+// Capture the Slack token in the 'hello' event so we can reuse it later.
+slapp.event('hello', (msg) => {
+  savedToken = msg.meta.bot_token;
+  console.log("Stashed 'hello' token");
+});
 
 // response to the user typing "help"
 slapp.message('help', ['mention', 'direct_message'], (msg) => {
   msg.say(HELP_TEXT)
 })
 
-// "Conversation" flow that tracks state - kicks off when user says hi, hello or hey
-slapp
-  .message('^(hi|hello|hey)$', ['direct_mention', 'direct_message'], (msg, text) => {
-    msg
-      .say(`${text}, how are you?`)
-      // sends next event from user to this route, passing along state
-      .route('how-are-you', { greeting: text })
-  })
-  .route('how-are-you', (msg, state) => {
-    var text = (msg.body.event && msg.body.event.text) || ''
+slapp.message(/track|playing|hearing|tune|listening|music/i, ['mention', 'direct_message'], (msg) => {
+  //msg.say("Sorry, my ears are broken.");
+  //return;
+        msg.say('Now playing: ' + currentTrack + ' (' + numListeners + ' listening)');
+        msg.say('Previous: ' + previousTrack);
 
-    // user may not have typed text as their next action, ask again and re-route
-    if (!text) {
-      return msg
-        .say("Whoops, I'm still waiting to hear how you're doing.")
-        .say('How are you?')
-        .route('how-are-you', state)
+ })
+
+slapp.message(/history|played/i, ['mention', 'direct_message'], (msg) => {
+
+    histIndex = numTracks;
+    if (trackHistory === null) {
+        trackHistory = [stopper]
     }
-
-    // add their response to state
-    state.status = text
-
-    msg
-      .say(`Ok then. What's your favorite color?`)
-      .route('color', state)
-  })
-  .route('color', (msg, state) => {
-    var text = (msg.body.event && msg.body.event.text) || ''
-
-    // user may not have typed text as their next action, ask again and re-route
-    if (!text) {
-      return msg
-        .say("I'm eagerly awaiting to hear your favorite color.")
-        .route('color', state)
+    if (trackHistory.length === 1 && trackHistory[0] === stopper && currentTrack !== null) {
+      trackHistory = [currentTrack]
     }
-
-    // add their response to state
-    state.color = text
-
-    msg
-      .say('Thanks for sharing.')
-      .say(`Here's what you've told me so far: \`\`\`${JSON.stringify(state)}\`\`\``)
-    // At this point, since we don't route anywhere, the "conversation" is over
-  })
-
-// Can use a regex as well
-slapp.message(/^(thanks|thank you)/i, ['mention', 'direct_message'], (msg) => {
-  // You can provide a list of responses, and a random one will be chosen
-  // You can also include slack emoji in your responses
-  msg.say([
-    "You're welcome :smile:",
-    'You bet',
-    ':+1: Of course',
-    'Anytime :sun_with_face: :full_moon_with_face:'
-  ])
+    if (trackHistory > 0) {
+        if (currentTrack != null && _.last(trackHistory) != currentTrack) {
+            trackHistory = _.concat(trackHistory, currentTrack)
+        }
+    }
+    console.log(trackHistory)
+    var sawNonStopper = false
+    var first = true
+    msg.say('What has played recently:')
+    _.eachRight(trackHistory, function(value) {
+      if (value !== stopper) {
+        sawNonStopper = true
+        if (first) {
+            value = value + " (now playing)"
+            first = false
+        }
+        msg.say(value)
+      } else {
+        if (!sawNonStopper) {
+          msg.say(value)
+          return
+        }
+      }
+    })
 })
 
-// demonstrate returning an attachment...
-slapp.message('attachment', ['mention', 'direct_message'], (msg) => {
-  msg.say({
-    text: 'Check out this amazing attachment! :confetti_ball: ',
-    attachments: [{
-      text: 'Slapp is a robust open source library that sits on top of the Slack APIs',
-      title: 'Slapp Library - Open Source',
-      image_url: 'https://storage.googleapis.com/beepboophq/_assets/bot-1.22f6fb.png',
-      title_link: 'https://beepboophq.com/',
-      color: '#7CD197'
-    }]
-  })
+slapp.message(/oblique|strateg(y|ies)/i, ['mention', 'direct_message'], (msg) => {
+    msg.say(_.sample(strategies))
+})
+
+slapp.message(/\b(hi|hey|hoi|yo|hai|hello|howdy|greetings|sup|good\s+(morning|day|afternoon|evening))\b/i, ['mention', 'direct_message'], (msg) => {
+  msg.say(['hi there, how are you?','Heya, how\'s you?','sup dude','yo wassup','hello ambient, how are you?'])
+   .route('handleHowAreYou')  // where to route the next msg in the conversation
+})
+
+slapp.message(/bye|nite|night|later|vista|goodbye|dreams|see you|bai|good night|ttfn|syl|nini/i, ['mention', 'direct_message'], (msg) => {
+  msg.say(['Goodnight :zzz:','see you soon? :blush:','take it easy then','cheers mate','sweet dreams :star2:','nini...'])
+   .route('handleSweetDreams')  // where to route the next msg in the conversation
+})
+
+slapp.message(/(T|t)hank( |s|y|ies)|cheers|ty/i, ['mention', 'direct_message'], (msg) => {
+     if (Math.random() < 0.98) {
+    msg.say(['No problem!', 'You are welcome!', 'Happy to help!', 'de nada!', 'My pleasure!', ':pray:', ':raised_hands:', 'cool'])
+     }
+})
+
+slapp.message('peak', ['mention', 'direct_message'], (msg) => {
+  monitor.createStatsXmlStream('/admin/stats', function(err, xmlStream) {
+  if (err) throw err;
+
+    var xmlParser = new Monitor.XmlStreamParser();
+
+    xmlParser.on('error', function(err) {
+      console.log('error', err);
+    });
+
+    var xmlParser = new Monitor.XmlStreamParser();
+
+    xmlParser.on('source', function(source) {
+      msg.say('Listener peak was ' + source.listenerPeak + ' since ' + source.streamStart);
+    });
+
+  // Finish event is being piped from xmlStream
+    xmlParser.on('finish', function() {
+    //console.log('all sources are processed');
+    });
+
+    xmlStream.pipe(xmlParser);
+  });
+
+})
+
+//
+
+// register a route handler
+slapp.route('handleHowAreYou', (msg) => {
+  // respond with a random entry from array
+  msg.say(['I feel that way sometimes too', 'Yeah me too', 'Cool', 'well hang in there.', 'sweet','sigh','Could be worse.'])
+})
+
+slapp.route('handleSweetDreams', (msg) => {
+  // respond with a random entry from array
+  msg.say([':crescent_moon:', ':first_quarter_moon_with_face:', ':heart:', ':sleeping:', ':zzz:',':dizzy:',':sparkles:'])
 })
 
 // Catch-all for any other responses not handled above
 slapp.message('.*', ['direct_mention', 'direct_message'], (msg) => {
-  // respond only 40% of the time
-  if (Math.random() < 0.4) {
-    msg.say([':wave:', ':pray:', ':raised_hands:'])
+  // respond only 90% of the time
+  console.log('someone said something');
+  if (Math.random() < 0.9) {
+    msg.say([':wave:', ':pray:', ':raised_hands:', 'word.', ':wink:', 'Did you say something?',':innocent:',':hankey:',':smirk:'])
   }
 })
 
@@ -123,4 +271,5 @@ server.listen(port, (err) => {
   }
 
   console.log(`Listening on port ${port}`)
-})
+});
+
