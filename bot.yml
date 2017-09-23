@@ -1,4 +1,17 @@
-name: Spud
-description: Spud's the RadioSpiral utility bot. It will let you know what's playing and how many listeners are on for now.
+name: Spudtest
+description: Spudtest is the Radio Spiral utility testbed bot. He may well be broken.
 avatar: .beepboop/spud.png
-# To learn everything supported in the bot.yml file, visit https://beepboophq.com/docs/article/bot-yml
+config:
+- name: ICECAST_USERNAME
+  friendly_name: Icecast username
+  info: Username of the Icecast admin user
+  type: text
+  global: true
+- name: ICECAST_PASSWORD
+  friendly_name: Icecast Password
+  info: Password for the icecast admin user
+  type: secret
+  global: true
+
+
+

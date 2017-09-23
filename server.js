@@ -9,6 +9,7 @@ const fs = require('fs')
 const _ = require('lodash')
 const handleHowAreYou = 'handleHowAreYou';
 const handleSweetDreams = 'handleSweetDreams';
+
 // use `PORT` env var on Beep Boop - default to 3000 locally
 var port = process.env.PORT || 3000
 
@@ -19,13 +20,16 @@ var slapp = Slapp({
   context: Context()
 })
 
+//var icy = require('icy');
+//var icyurl = 'http://radio.radiospiral.net:8000/stream.mp3';
+
 var Monitor = require('icecast-monitor');
 
 var monitor = new Monitor({
   host: 'radio.radiospiral.net',
   port: 8000,
-  user: 'admin',
-  password: 'Pa55w0rd'
+  user: process.env.ICECAST_USERNAME,
+  password: process.env.ICECAST_PASSWORD
 });
 
 // Load oblique strategies
@@ -63,7 +67,6 @@ var trackHistory = []
 var numTracks = 0
 var maxTracks = 10
 var histIndex = 0
-var savedToken = null;
 
 monitor.createFeed(function(err, feed) {
   if (err) throw err;
@@ -91,18 +94,6 @@ monitor.createFeed(function(err, feed) {
       if (numTracks > maxTracks) {
         trackHistory = _.drop(trackHistory);
         numTracks = maxTracks;
-      }
-      // Post the track in now-playing
-      // slackToken should have been set already; skip if not
-      if (savedToken !== null) {
-        console.log('trying to hit #now-playing...');
-        let payload = Object.assign({
-          token: savedToken,
-          channel: '#now-playing'
-         }, 'Now playing: ' + currentTrack);
-        slapp.client.chat.postMessage(payload, (err, data) => {
-          if (err) console.log('Error posting message ', err, data)
-        });
       }
     } else {
       console.log('**dupEvent ' + currentTrack + ' is equal to ' + testTrack);
@@ -137,13 +128,6 @@ monitor.createFeed(function(err, feed) {
 //   if (err) console.log('Error adding reaction', err)
 //  })
 //})
-
-
-// Capture the Slack token in the 'hello' event so we can reuse it later.
-slapp.event('hello', (msg) => {
-  savedToken = msg.meta.bot_token;
-  console.log("Stashed 'hello' token");
-});
 
 // response to the user typing "help"
 slapp.message('help', ['mention', 'direct_message'], (msg) => {
